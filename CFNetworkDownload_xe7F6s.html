@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Haus Nentwig - VR Begehung</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            overflow: hidden; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 14px;
+            z-index: 100;
+            max-width: 320px;
+            line-height: 1.5;
+        }
+        #info h1 { font-size: 16px; margin-bottom: 8px; color: #4fc3f7; }
+        #info kbd {
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        #vr-button {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            padding: 15px 30px;
+            background: #4fc3f7;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 30px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 100;
+            transition: all 0.3s;
+        }
+        #vr-button:hover { background: #29b6f6; transform: scale(1.05); }
+        #vr-button:disabled { background: #666; cursor: not-allowed; }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,255,255,0.8);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 50;
+        }
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 4px;
+            height: 4px;
+            background: rgba(255,255,255,0.9);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            z-index: 200;
+        }
+    </style>
+    <!-- Three.js and WebXR -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="loading">🏠 Haus wird gebaut...</div>
+    <div id="info">
+        <h1>🏠 Haus Nentwig - VR Begehung</h1>
+        <strong>Steuerung (Desktop):</strong><br>
+        <kbd>WASD</kbd> = Bewegen<br>
+        <kbd>Maus</kbd> = Umschauen<br>
+        <kbd>Shift</kbd> = Schneller<br>
+        <kbd>Leertaste</kbd> = Nach oben<br>
+        <kbd>C</kbd> = Nach unten<br><br>
+        <strong>VR (Meta Quest):</strong><br>
+        Klicke "VR STARTEN" und setze die Brille auf.<br>
+        Linker Joystick = Bewegen<br>
+        Rechter Joystick = Umschauen<br><br>
+        <strong>Maße:</strong> EG 54,51 m² | OG 15,45 m² | Gesamt 74,66 m²<br>
+        <strong>Höhe:</strong> EG 2,99m | First 7,65m
+    </div>
+    <div id="crosshair"></div>
+    <button id="vr-button">🥽 VR STARTEN</button>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { VRButton } from 'three/addons/webxr/VRButton.js';
+        import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+
+        // ==================== KONFIGURATION ====================
+        const SCALE = 1; // 1 Einheit = 1 Meter
+        const WALL_HEIGHT_EG = 2.99; // EG Raumhöhe
+        const WALL_HEIGHT_OG = 2.80; // OG Raumhöhe (geschätzt)
+        const FLOOR_THICKNESS = 0.20; // OK RFB = 0,20
+        const WALL_THICKNESS = 0.30; // 30cm Wandstärke
+
+        // ==================== SZENE SETUP ====================
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB); // Himmelblau
+        scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 1.7, 5); // Augenhöhe
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.xr.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // VR Button
+        const vrButton = document.getElementById('vr-button');
+        vrButton.addEventListener('click', () => {
+            if (navigator.xr) {
+                navigator.xr.requestSession('immersive-vr', {
+                    requiredFeatures: ['local-floor'],
+                    optionalFeatures: ['hand-tracking']
+                }).then(session => {
+                    renderer.xr.setSession(session);
+                });
+            }
+        });
+
+        // ==================== BELEUCHTUNG ====================
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+
+        const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        sunLight.position.set(10, 20, 10);
+        sunLight.castShadow = true;
+        sunLight.shadow.mapSize.width = 2048;
+        sunLight.shadow.mapSize.height = 2048;
+        sunLight.shadow.camera.near = 0.5;
+        sunLight.shadow.camera.far = 50;
+        sunLight.shadow.camera.left = -15;
+        sunLight.shadow.camera.right = 15;
+        sunLight.shadow.camera.top = 15;
+        sunLight.shadow.camera.bottom = -15;
+        scene.add(sunLight);
+
+        // Innenbeleuchtung
+        const interiorLight1 = new THREE.PointLight(0xffeebb, 0.5, 10);
+        interiorLight1.position.set(0, 2.5, 0);
+        scene.add(interiorLight1);
+
+        const interiorLight2 = new THREE.PointLight(0xffeebb, 0.3, 8);
+        interiorLight2.position.set(3, 2.5, 3);
+        scene.add(interiorLight2);
+
+        // ==================== MATERIALIEN ====================
+        const materials = {
+            wall: new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 0.9 }),
+            wallExterior: new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.8 }),
+            floor: new THREE.MeshStandardMaterial({ color: 0x8B6914, roughness: 0.6 }),
+            floorTile: new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.4 }),
+            ceiling: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
+            roof: new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.7 }),
+            window: new THREE.MeshStandardMaterial({ 
+                color: 0x87CEEB, 
+                transparent: true, 
+                opacity: 0.3,
+                roughness: 0.1,
+                metalness: 0.1
+            }),
+            door: new THREE.MeshStandardMaterial({ color: 0x654321, roughness: 0.7 }),
+            doorFrame: new THREE.MeshStandardMaterial({ color: 0x4a3728, roughness: 0.8 }),
+            stair: new THREE.MeshStandardMaterial({ color: 0x8B6914, roughness: 0.6 }),
+            stairRiser: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }),
+            grass: new THREE.MeshStandardMaterial({ color: 0x4a7c59, roughness: 1.0 }),
+            foundation: new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.9 }),
+            metal: new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.3, metalness: 0.8 })
+        };
+
+        // ==================== HILFSFUNKTIONEN ====================
+        function createBox(w, h, d, material, x, y, z, castShadow = true) {
+            const geometry = new THREE.BoxGeometry(w, h, d);
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.position.set(x, y, z);
+            mesh.castShadow = castShadow;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+            return mesh;
+        }
+
+        function createWall(x1, z1, x2, z2, height, thickness, material, y = 0) {
+            const dx = x2 - x1;
+            const dz = z2 - z1;
+            const length = Math.sqrt(dx * dx + dz * dz);
+            const angle = Math.atan2(dz, dx);
+
+            const wall = createBox(length, height, thickness, material, 
+                (x1 + x2) / 2, y + height / 2, (z1 + z2) / 2);
+            wall.rotation.y = -angle;
+            return wall;
+        }
+
+        // ==================== GRUNDSTÜCK ====================
+        // Rasen
+        createBox(30, 0.1, 30, materials.grass, 0, -0.05, 0, false);
+        // Fundament
+        createBox(8.25 + 0.6, 0.5, 12.0 + 0.6, materials.foundation, 0, -0.25, 0);
+
+        // ==================== AUSSENWÄNDE EG ====================
+        // Hausmaße: 8.25m x 12.0m
+        const houseW = 8.25;
+        const houseD = 12.0;
+        const halfW = houseW / 2;
+        const halfD = houseD / 2;
+        const wallT = WALL_THICKNESS;
+
+        // Nordwand (z = -halfD)
+        createWall(-halfW, -halfD, halfW, -halfD, WALL_HEIGHT_EG, wallT, materials.wallExterior);
+        // Südwand (z = halfD)
+        createWall(-halfW, halfD, halfW, halfD, WALL_HEIGHT_EG, wallT, materials.wallExterior);
+        // Westwand (x = -halfW)
+        createWall(-halfW, -halfD, -halfW, halfD, WALL_HEIGHT_EG, wallT, materials.wallExterior);
+        // Ostwand (x = halfW)
+        createWall(halfW, -halfD, halfW, halfD, WALL_HEIGHT_EG, wallT, materials.wallExterior);
+
+        // ==================== INNENWÄNDE EG ====================
+        // Diele/HWR/Bad Bereich (von links)
+        // Diele ist 7,92 m² - ca. 2.8m x 2.8m
+        // HWR 4,70 m² - ca. 2.1m x 2.2m
+        // Bad 5,76 m² - ca. 2.4m x 2.4m
+
+        // Trennwand Diele/Wohnen (horizontal, bei z ≈ -1.5)
+        createWall(-halfW, -1.5, 0.5, -1.5, WALL_HEIGHT_EG, wallT, materials.wall);
+
+        // Trennwand HWR/Bad (vertical, bei x ≈ -2.5)
+        createWall(-2.5, -halfD, -2.5, -1.5, WALL_HEIGHT_EG, wallT, materials.wall);
+
+        // Trennwand Bad/Diele (horizontal, bei z ≈ -3.5)
+        createWall(-2.5, -3.5, 0.5, -3.5, WALL_HEIGHT_EG, wallT, materials.wall);
+
+        // Trennwand Arbeiten/Gast (vertical, bei x ≈ 2.0)
+        createWall(2.0, -1.5, 2.0, halfD, WALL_HEIGHT_EG, wallT, materials.wall);
+
+        // Trennwand Gast/Wohnen (horizontal, bei z ≈ 2.5)
+        createWall(2.0, 2.5, halfW, 2.5, WALL_HEIGHT_EG, wallT, materials.wall);
+
+        // Trennwand Arbeiten/Wohnen (horizontal, bei z ≈ 2.5)
+        createWall(2.0, 2.5, halfW, 2.5, WALL_HEIGHT_EG, wallT, materials.wall);
+
+        // ==================== BÖDEN EG ====================
+        // Gesamter EG-Boden
+        createBox(houseW - wallT*2, 0.05, houseD - wallT*2, materials.floor, 
+            0, 0, 0, false);
+
+        // Bad-Boden (Fliesen)
+        createBox(2.2, 0.06, 2.2, materials.floorTile, -1.3, 0.01, -2.5, false);
+
+        // HWR-Boden (Fliesen)
+        createBox(2.0, 0.06, 2.0, materials.floorTile, -1.3, 0.01, -4.5, false);
+
+        // ==================== FENSTER EG ====================
+        // Süd-Ost: Große Fensterfront (5-teilig)
+        const windowWidth = 1.0;
+        const windowHeight = 1.8;
+        const windowY = 1.2;
+
+        // Süd-Ost Fenster (Wohnzimmer)
+        for (let i = 0; i < 5; i++) {
+            createBox(windowWidth, windowHeight, 0.05, materials.window, 
+                -1.5 + i * 1.1, windowY, halfD - wallT/2, false);
+        }
+
+        // Nord-West Fenster
+        createBox(1.2, 1.2, 0.05, materials.window, -2.0, 1.5, -halfD + wallT/2, false);
+        createBox(1.2, 1.2, 0.05, materials.window, 0.5, 1.5, -halfD + wallT/2, false);
+        createBox(1.2, 1.2, 0.05, materials.window, 3.0, 1.5, -halfD + wallT/2, false);
+
+        // Rettungsweg EG (oben im Wohnzimmer)
+        createBox(0.9, 1.25, 0.05, materials.window, 0, 2.2, halfD - wallT/2, false);
+
+        // ==================== TÜREN EG ====================
+        const doorW = 0.9;
+        const doorH = 2.1;
+
+        // Eingangstür (Nordseite, in Diele)
+        createBox(doorW, doorH, 0.05, materials.door, -1.0, doorH/2, -halfD + wallT/2, false);
+
+        // Tür Diele -> Wohnen
+        createBox(doorW, doorH, 0.05, materials.door, 0.3, doorH/2, -1.5, false);
+
+        // Tür Diele -> HWR
+        createBox(doorW, doorH, 0.05, materials.door, -2.5, doorH/2, -2.5, false);
+
+        // Tür Diele -> Bad
+        createBox(doorW, doorH, 0.05, materials.door, -1.5, doorH/2, -3.5, false);
+
+        // Tür Wohnen -> Arbeiten
+        createBox(doorW, doorH, 0.05, materials.door, 2.0, doorH/2, 0.5, false);
+
+        // Tür Wohnen -> Gast
+        createBox(doorW, doorH, 0.05, materials.door, 3.5, doorH/2, 2.5, false);
+
+        // Rettungsweg-Tür (Wohnen -> Außen)
+        createBox(0.9, 1.25, 0.05, materials.door, 0, 0.625, halfD - wallT/2, false);
+
+        // ==================== TREPPE ====================
+        // Wendeltreppe von EG zu OG
+        const stairCenterX = -0.5;
+        const stairCenterZ = 0;
+        const stairRadius = 1.2;
+        const stairHeight = WALL_HEIGHT_EG; // 2.99m
+        const numSteps = 15;
+
+        for (let i = 0; i < numSteps; i++) {
+            const angle = (i / numSteps) * Math.PI * 1.5;
+            const stepX = stairCenterX + Math.cos(angle) * stairRadius * 0.7;
+            const stepZ = stairCenterZ + Math.sin(angle) * stairRadius * 0.7;
+            const stepY = (i / numSteps) * stairHeight;
+
+            createBox(0.8, 0.05, 0.3, materials.stair, stepX, stepY + 0.025, stepZ);
+            createBox(0.8, 0.15, 0.05, materials.stairRiser, stepX, stepY - 0.075, stepZ + 0.15);
+        }
+
+        // Treppengeländer
+        const railingHeight = 1.0;
+        for (let i = 0; i < numSteps; i += 2) {
+            const angle = (i / numSteps) * Math.PI * 1.5;
+            const rX = stairCenterX + Math.cos(angle) * stairRadius * 0.7;
+            const rZ = stairCenterZ + Math.sin(angle) * stairRadius * 0.7;
+            const rY = (i / numSteps) * stairHeight;
+            createBox(0.05, railingHeight, 0.05, materials.metal, rX + 0.4, rY + railingHeight/2, rZ);
+        }
+
+        // ==================== OG (OBERGESCHOSS) ====================
+        const ogY = WALL_HEIGHT_EG + FLOOR_THICKNESS; // 2.99 + 0.20 = 3.19
+
+        // OG-Boden (Galerie)
+        createBox(4.5, 0.15, 6.0, materials.floor, 1.5, ogY, 2.5, false);
+
+        // OG-Wände (Galerie)
+        createWall(1.5, -0.5, 1.5, 5.5, WALL_HEIGHT_OG, wallT, materials.wall, ogY);
+        createWall(1.5, -0.5, 4.0, -0.5, WALL_HEIGHT_OG, wallT, materials.wall, ogY);
+        createWall(4.0, -0.5, 4.0, 5.5, WALL_HEIGHT_OG, wallT, materials.wall, ogY);
+        createWall(1.5, 5.5, 4.0, 5.5, WALL_HEIGHT_OG, wallT, materials.wall, ogY);
+
+        // OG-Fenster
+        createBox(1.0, 1.2, 0.05, materials.window, 2.0, ogY + 1.5, -0.5 - wallT/2, false);
+        createBox(1.0, 1.2, 0.05, materials.window, 3.5, ogY + 1.5, -0.5 - wallT/2, false);
+
+        // OG Rettungsweg
+        createBox(0.9, 1.25, 0.05, materials.window, 2.75, ogY + 0.8, 5.5 + wallT/2, false);
+
+        // OG-Treppe Fortsetzung
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 1.5 + Math.PI * 1.5;
+            const stepX = stairCenterX + Math.cos(angle) * stairRadius * 0.7;
+            const stepZ = stairCenterZ + Math.sin(angle) * stairRadius * 0.7;
+            const stepY = ogY + (i / 8) * WALL_HEIGHT_OG;
+
+            createBox(0.8, 0.05, 0.3, materials.stair, stepX, stepY + 0.025, stepZ);
+        }
+
+        // ==================== DACH ====================
+        // Satteldach
+        const roofHeight = 2.5;
+        const roofOverhang = 0.5;
+
+        // Dachgeometrie (einfache Darstellung)
+        const roofGeometry = new THREE.ConeGeometry(houseW/2 + roofOverhang, roofHeight, 4, 1, true);
+        const roofMesh = new THREE.Mesh(roofGeometry, materials.roof);
+        roofMesh.position.set(0, ogY + WALL_HEIGHT_OG + roofHeight/2, 0);
+        roofMesh.rotation.z = Math.PI / 2;
+        roofMesh.rotation.y = Math.PI / 4;
+        roofMesh.scale.set(1, 1, houseD / houseW);
+        roofMesh.castShadow = true;
+        scene.add(roofMesh);
+
+        // Dachsparren (sichtbar im Luftraum)
+        for (let i = 0; i < 5; i++) {
+            const zPos = -halfD + (i / 4) * houseD;
+            createBox(0.1, 0.1, houseD, materials.roof, 0, ogY + WALL_HEIGHT_OG + 0.5, zPos, false);
+        }
+
+        // ==================== LUFTRAUM ====================
+        // Keine Decke zwischen EG und OG im Wohnbereich
+        // Der Luftraum ist ca. 6m hoch
+
+        // ==================== STEUERUNG ====================
+        const controls = {
+            moveForward: false,
+            moveBackward: false,
+            moveLeft: false,
+            moveRight: false,
+            moveUp: false,
+            moveDown: false,
+            speed: 0.08,
+            fastSpeed: 0.15
+        };
+
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+
+        document.addEventListener('keydown', (e) => {
+            switch(e.code) {
+                case 'KeyW': controls.moveForward = true; break;
+                case 'KeyS': controls.moveBackward = true; break;
+                case 'KeyA': controls.moveLeft = true; break;
+                case 'KeyD': controls.moveRight = true; break;
+                case 'Space': controls.moveUp = true; break;
+                case 'KeyC': controls.moveDown = true; break;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            switch(e.code) {
+                case 'KeyW': controls.moveForward = false; break;
+                case 'KeyS': controls.moveBackward = false; break;
+                case 'KeyA': controls.moveLeft = false; break;
+                case 'KeyD': controls.moveRight = false; break;
+                case 'Space': controls.moveUp = false; break;
+                case 'KeyC': controls.moveDown = false; break;
+            }
+        });
+
+        // Maus-Steuerung (First-Person)
+        let isPointerLocked = false;
+        const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+
+        renderer.domElement.addEventListener('click', () => {
+            if (!renderer.xr.isPresenting) {
+                renderer.domElement.requestPointerLock();
+            }
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            isPointerLocked = document.pointerLockElement === renderer.domElement;
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (isPointerLocked) {
+                euler.setFromQuaternion(camera.quaternion);
+                euler.y -= e.movementX * 0.002;
+                euler.x -= e.movementY * 0.002;
+                euler.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, euler.x));
+                camera.quaternion.setFromEuler(euler);
+            }
+        });
+
+        // VR Controller Setup
+        const controller1 = renderer.xr.getController(0);
+        const controller2 = renderer.xr.getController(1);
+        scene.add(controller1);
+        scene.add(controller2);
+
+        // ==================== ANIMATION LOOP ====================
+        const clock = new THREE.Clock();
+
+        function animate() {
+            renderer.setAnimationLoop(() => {
+                const delta = clock.getDelta();
+
+                if (!renderer.xr.isPresenting) {
+                    // Desktop Steuerung
+                    const speed = controls.moveUp || controls.moveDown ? controls.fastSpeed : controls.speed;
+
+                    direction.set(0, 0, 0);
+                    if (controls.moveForward) direction.z -= 1;
+                    if (controls.moveBackward) direction.z += 1;
+                    if (controls.moveLeft) direction.x -= 1;
+                    if (controls.moveRight) direction.x += 1;
+                    if (controls.moveUp) direction.y += 1;
+                    if (controls.moveDown) direction.y -= 1;
+
+                    direction.normalize();
+
+                    if (controls.moveForward || controls.moveBackward) {
+                        velocity.z -= direction.z * speed * 10 * delta;
+                    }
+                    if (controls.moveLeft || controls.moveRight) {
+                        velocity.x -= direction.x * speed * 10 * delta;
+                    }
+                    if (controls.moveUp || controls.moveDown) {
+                        velocity.y = direction.y * speed;
+                    }
+
+                    // Kamera-Bewegung relativ zur Blickrichtung
+                    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+
+                    const moveVec = new THREE.Vector3();
+                    if (controls.moveForward) moveVec.add(forward);
+                    if (controls.moveBackward) moveVec.sub(forward);
+                    if (controls.moveLeft) moveVec.sub(right);
+                    if (controls.moveRight) moveVec.add(right);
+
+                    moveVec.normalize();
+                    moveVec.multiplyScalar(speed);
+
+                    camera.position.x += moveVec.x;
+                    camera.position.z += moveVec.z;
+
+                    if (controls.moveUp) camera.position.y += speed;
+                    if (controls.moveDown) camera.position.y -= speed;
+
+                    // Bodenkollision (mindestens 1.7m Augenhöhe)
+                    if (camera.position.y < 1.7) camera.position.y = 1.7;
+                    if (camera.position.y > 8.0) camera.position.y = 8.0;
+
+                    // Begrenzung auf Grundstück
+                    camera.position.x = Math.max(-15, Math.min(15, camera.position.x));
+                    camera.position.z = Math.max(-15, Math.min(15, camera.position.z));
+                }
+
+                renderer.render(scene, camera);
+            });
+        }
+
+        // Fenstergröße anpassen
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Loading ausblenden
+        document.getElementById('loading').style.display = 'none';
+
+        animate();
+    </script>
+</body>
+</html>
